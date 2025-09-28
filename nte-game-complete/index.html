@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>NTE GURUPI - World 1-1 (Completo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height:100%; margin:0; background:#87CEEB; font-family: Arial, sans-serif; -webkit-tap-highlight-color: transparent; }
+    #game { width:100%; height:100vh; display:block; touch-action: none; }
+    .hud { position: absolute; left: 10px; top: 10px; color: #fff; text-shadow: 0 1px 0 #0006; z-index: 50; }
+    .ui-topright { position: absolute; right: 10px; top: 10px; z-index: 50; color:#fff; text-shadow: 0 1px 0 #0006; }
+    .controls { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; gap: 12px; align-items: center; justify-content: center; pointer-events: none; }
+    .btn { width: 64px; height: 64px; border-radius: 10px; background: rgba(0,0,0,0.28); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; user-select:none; pointer-events: auto; touch-action: none; }
+    .btn.small { width:48px; height:48px; font-size:14px; }
+    .center-message { position: absolute; z-index: 80; left: 50%; top: 40%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.6); color: #fff; padding: 20px; border-radius: 10px; text-align:center; display:none; }
+    button { padding:6px 8px; border-radius:6px; border: none; cursor:pointer; }
+    /* mobile safe area */
+    @media (max-width: 900px) {
+      #game { height: calc(100vh - 20px); }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hud" id="hud"></div>
+  <div class="ui-topright">
+    <div>Fase: <span id="levelLabel">1</span> / 1</div>
+    <div style="margin-top:6px">
+      <button id="btnRestart">Reiniciar</button>
+      <button id="btnResetProgress">Resetar Progresso</button>
+    </div>
+  </div>
+
+  <div class="controls" id="touchControls">
+    <div class="btn" id="leftBtn">◀</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="btn small" id="jumpBtn">▲</div>
+      <div class="btn small" id="shootBtn">●</div>
+    </div>
+    <div class="btn" id="rightBtn">▶</div>
+  </div>
+
+  <div class="center-message" id="centerMsg"></div>
+
+<script>
+/* Full 1-1 style level with visible player, bricks, pipes, HUD, enemies.
+   Uses assets/player.png and assets/enemies.png in /assets/
+*/
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: window.innerWidth > 960 ? 960 : window.innerWidth,
+  height: window.innerWidth > 960 ? 540 : Math.round(window.innerHeight * 0.95),
+  backgroundColor: 0x87CEEB,
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  physics: { default: 'arcade', arcade: { gravity: { y: 1100 }, debug: false }},
+  scene: { preload, create, update }
+};
+let game = new Phaser.Game(config);
+
+function preload() {
+  this.load.image('player_img', 'assets/player.png');
+  this.load.spritesheet('enemies_sheet', 'assets/enemies.png', { frameWidth: 32, frameHeight: 32 });
+}
+
+function create() {
+  const scene = this;
+  scene.level = 1;
+  scene.score = 0;
+  scene.timer = 400;
+  scene.lives = 3;
+  scene.keys = scene.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', shoot: 'SHIFT' });
+
+  // touch controls
+  setupTouchControls();
+
+  // create repeating background sky
+  scene.add.rectangle(0,0, scene.scale.width*10, scene.scale.height, 0x87CEEB).setOrigin(0);
+
+  // create tiles (ground) using static group
+  scene.platforms = scene.physics.add.staticGroup();
+  const worldWidth = 2400;
+  for (let x=0; x<worldWidth; x+=48) {
+    const gx = scene.add.rectangle(x+24, scene.scale.height - 12, 48, 24, 0x6e3f1b);
+    scene.physics.add.existing(gx, true);
+    scene.platforms.add(gx);
+  }
+
+  // create some brick textures and blocks
+  createBlockTextures(scene);
+
+  scene.blocks = scene.physics.add.staticGroup();
+  // place bricks and ? blocks like mario
+  const blockPositions = [
+    {x:200,y:320, type:'?'},
+    {x:320,y:320, type:'brick'},
+    {x:380,y:320, type:'brick'},
+    {x:540,y:260, type:'brick', tall:true},
+    {x:600,y:320, type:'?'},
+    {x:760,y:320, type:'brick'},
+    {x:820,y:320, type:'brick'},
+    {x:980,y:320, type:'?'},
+    {x:1200,y:320, type:'brick'},
+    {x:1260,y:320, type:'brick'}
+  ];
+  blockPositions.forEach((p,i)=>{
+    const key = p.type === '?' ? 'qblock' : 'brick';
+    const b = scene.add.image(p.x, p.y, key);
+    b.setData('used', false);
+    b.setData('type', p.type);
+    b.setOrigin(0.5,0.5);
+    scene.physics.add.existing(b, true);
+    scene.blocks.add(b);
+  });
+
+  // create pipes
+  scene.pipes = scene.physics.add.staticGroup();
+  const pipe = makePipe(scene, 80, scene.scale.height - 52);
+  scene.pipes.add(pipe);
+  const pipe2 = makePipe(scene, 1400, scene.scale.height - 52);
+  scene.pipes.add(pipe2);
+
+  // Create clouds / background decoration (simple)
+  for (let i=0;i<6;i++){
+    const cx = 300 + i*260;
+    const cy = 80 + (i%2)*30;
+    const cloud = scene.add.ellipse(cx, cy, 120, 60, 0xFFFFFF, 1).setAlpha(0.9);
+    cloud.setScrollFactor(0.6);
+  }
+
+  // player using image (scaled)
+  scene.player = scene.physics.add.sprite(120, scene.scale.height - 80, 'player_img');
+  scene.player.setBounce(0.05);
+  scene.player.setCollideWorldBounds(true);
+  scene.player.setSize(28,40);
+  scene.player.setOffset(6,6);
+  scene.player.isPowered = false;
+  scene.player.lives = scene.lives;
+  scene.player.score = scene.score;
+
+  // simple animations for enemies if spritesheet has frames
+  scene.anims.create({ key: 'enemy_walk', frames: scene.anims.generateFrameNumbers('enemies_sheet', { start:0, end:3 }), frameRate: 8, repeat: -1 });
+
+  // spawn enemies
+  scene.enemies = scene.physics.add.group();
+  spawnEnemy(scene, 480, scene.scale.height - 60);
+  spawnEnemy(scene, 920, scene.scale.height - 60);
+  spawnEnemy(scene, 1520, scene.scale.height - 60);
+
+  // collisions
+  scene.physics.add.collider(scene.player, scene.platforms);
+  scene.physics.add.collider(scene.enemies, scene.platforms);
+  scene.physics.add.collider(scene.player, scene.blocks, hitBlock, null, scene);
+  scene.physics.add.collider(scene.player, scene.enemies, playerEnemyCollide, null, scene);
+
+  // bullets group for powered shooting
+  scene.bullets = scene.physics.add.group();
+  scene.physics.add.overlap(scene.bullets, scene.enemies, (b,e)=>{ if (b) b.destroy(); stompEnemy(scene, e); }, null, scene);
+
+  // camera
+  scene.cameras.main.setBounds(0,0,2400, scene.scale.height);
+  scene.cameras.main.startFollow(scene.player, true, 0.08, 0.08);
+
+  // HUD
+  scene.hudEl = document.getElementById('hud');
+  updateHUD(scene);
+
+  // UI buttons
+  document.getElementById('btnRestart').onclick = ()=> restartScene(scene);
+  document.getElementById('btnResetProgress').onclick = ()=> { localStorage.removeItem('nte_level'); restartScene(scene); };
+
+  // timer event
+  scene.time.addEvent({ delay: 1000, callback: ()=> { if (!scene.gamePaused) { scene.timer = Math.max(0, scene.timer - 1); updateHUD(scene); if (scene.timer===0) gameOver(scene); } }, loop: true });
+
+  // small start message
+  showCenterMessage(scene, 'WORLD 1-1', 1500);
+}
+
+function update(time) {
+  const scene = this;
+  if (!scene.player || scene.gamePaused) return;
+  const pl = scene.player;
+  const keys = scene.keys;
+
+  // movement
+  if (isControlDown('left') || keys.left.isDown) { pl.setVelocityX(-180); pl.flipX = true; }
+  else if (isControlDown('right') || keys.right.isDown) { pl.setVelocityX(160); pl.flipX = false; }
+  else pl.setVelocityX(0);
+
+  // jump
+  if ((justPressed('jump') || Phaser.Input.Keyboard.JustDown(keys.up)) && pl.body.onFloor()) {
+    pl.setVelocityY(-520);
+  }
+
+  // shoot when powered
+  if ((justPressed('shoot') || Phaser.Input.Keyboard.JustDown(keys.shoot)) && pl.isPowered) {
+    if (!scene.lastShot || (time - scene.lastShot) > 300) {
+      fireBullet(scene);
+      scene.lastShot = time;
+    }
+  }
+
+  // simple enemy AI
+  scene.enemies.getChildren().forEach(e=>{
+    if (!e.isDead) {
+      if (e.body.blocked.left) e.setVelocityX(80);
+      if (e.body.blocked.right) e.setVelocityX(-80);
+      if (Math.abs(e.x - pl.x) < 100) e.setVelocityX((e.dir||1)*120);
+    }
+  });
+}
+
+/////////// HELPERS ///////////
+
+function createBlockTextures(scene) {
+  // brick
+  const g = scene.add.graphics();
+  g.fillStyle(0xC87F3E, 1); g.fillRect(0,0,50,40);
+  g.lineStyle(2, 0x8B5A2B); g.strokeRect(0,0,50,40);
+  g.generateTexture('brick', 50, 40);
+  g.clear();
+  // question block
+  g.fillStyle(0xE0B14D, 1); g.fillRect(0,0,50,40);
+  g.lineStyle(2, 0x8B5A2B); g.strokeRect(0,0,50,40);
+  g.fillStyle(0xFFD700, 1); g.fillCircle(25,20,8);
+  g.generateTexture('qblock', 50, 40);
+  g.destroy();
+}
+
+function makePipe(scene, x, y) {
+  // simple pipe using graphics texture
+  const key = 'pipe_' + x;
+  const g = scene.add.graphics();
+  g.fillStyle(0x2E8B57,1); g.fillRect(0,0,96,56);
+  g.lineStyle(4, 0x1E5E3E); g.strokeRect(0,0,96,56);
+  g.generateTexture(key, 96, 56);
+  g.destroy();
+  const img = scene.add.image(x, y-20, key).setOrigin(0.5,1);
+  scene.physics.add.existing(img, true);
+  return img;
+}
+
+function spawnEnemy(scene, x, y) {
+  const e = scene.physics.add.sprite(x, y, 'enemies_sheet', 0);
+  e.setVelocityX(-80);
+  e.dir = -1;
+  e.setBounce(0);
+  e.isDead = false;
+  e.anims.play('enemy_walk');
+  e.setSize(20,26);
+  scene.enemies.add(e);
+  return e;
+}
+
+function stompEnemy(scene, enemy) {
+  if (!enemy || enemy.isDead) return;
+  enemy.isDead = true;
+  enemy.setVelocity(0, -80);
+  enemy.disableBody(true,true);
+  scene.player.score += 100;
+  updateHUD(scene);
+}
+
+function playerEnemyCollide(player, enemy) {
+  if (player.body.velocity.y > 80 && player.body.touching.down && enemy.body.touching.up) {
+    stompEnemy(this, enemy);
+    player.setVelocityY(-300);
+    playSfx('stomp');
+    return;
+  }
+  if (!player.invincible) {
+    takeDamage(this, player);
+  }
+}
+
+function hitBlock(player, block) {
+  // only activate when hit from below
+  if (!(player.body.touching.up && block.body.touching.down)) return;
+  if (block.getData('used')) return;
+  const type = block.getData('type');
+  block.setData('used', true);
+  // animate bump
+  const scene = this;
+  scene.tweens.add({ targets: block, y: block.y - 8, duration: 80, yoyo: true, onComplete: ()=>{} });
+
+  if (type==='?') {
+    // spawn NTE power-up or heart randomly
+    if (Math.random() < 0.25) spawnHeart(scene, block.x, block.y - 40);
+    else spawnNTE(scene, block.x, block.y - 40);
+  } else {
+    // breakable brick -> small bounce, give points
+    scene.player.score += 50;
+    updateHUD(scene);
+  }
+}
+
+function spawnNTE(scene, x, y) {
+  const txt = scene.add.text(x, y, 'NTE', { font: '16px Arial', color:'#FFD700', stroke:'#000', strokeThickness:3 }).setOrigin(0.5);
+  scene.physics.add.existing(txt);
+  txt.body.setVelocityY(-180); txt.body.setBounce(0.3); txt.body.setCollideWorldBounds(true); txt.body.setAllowGravity(true);
+  txt.setData('isNTE', true);
+  scene.items = scene.items || scene.physics.add.group();
+  scene.items.add(txt);
+  scene.physics.add.overlap(scene.player, txt, (pl,it)=>{
+    if (!it.collected) {
+      it.collected = true; it.destroy();
+      pl.isPowered = true;
+      pl.setTint(0xFFD700);
+      if (pl.powerTimer) pl.powerTimer.remove(false);
+      pl.powerTimer = scene.time.addEvent({ delay: 15000, callback: ()=> { pl.isPowered = false; pl.clearTint(); }, callbackScope: scene });
+      playSfx('powerup');
+    }
+  }, null, scene);
+}
+
+function spawnHeart(scene, x, y) {
+  const txt = scene.add.text(x, y, '❤', { font: '16px Arial', color:'#ff4d4d', stroke:'#000', strokeThickness:3 }).setOrigin(0.5);
+  scene.physics.add.existing(txt);
+  txt.body.setVelocityY(-200); txt.body.setBounce(0.3); txt.body.setCollideWorldBounds(true); txt.body.setAllowGravity(true);
+  txt.setData('isHeart', true);
+  scene.items = scene.items || scene.physics.add.group();
+  scene.items.add(txt);
+  scene.physics.add.overlap(scene.player, txt, (pl,it)=>{
+    if (!it.collected) {
+      it.collected = true; it.destroy();
+      pl.lives = (pl.lives||0) + 1;
+      playSfx('heart');
+      updateHUD(scene);
+    }
+  }, null, scene);
+}
+
+function takeDamage(scene, player) {
+  player.lives -= 1;
+  updateHUD(scene);
+  player.invincible = true;
+  player.setTint(0xff0000);
+  player.score = Math.max(0, player.score - 100);
+  scene.time.delayedCall(1200, ()=> { player.clearTint(); player.invincible = false; }, [], scene);
+  if (player.lives <= 0) {
+    gameOver(scene);
+  } else {
+    player.x = Math.max(80, player.x - 120);
+    player.y = 100;
+    player.setVelocity(0,0);
+  }
+}
+
+function fireBullet(scene) {
+  const pl = scene.player;
+  const b = scene.physics.add.image(pl.x + (pl.flipX ? -18 : 18), pl.y - 8, null);
+  // small visual bullet using graphics
+  const g = scene.add.graphics();
+  g.fillStyle(0xFFFF00,1); g.fillCircle(6,6,6); g.generateTexture('bullet',12,12); g.destroy();
+  b.setTexture('bullet');
+  b.setCircle(6);
+  b.body.setAllowGravity(false);
+  b.setVelocityX(pl.flipX ? -420 : 420);
+  scene.bullets.add(b);
+  scene.time.delayedCall(2500, ()=> { if (b && b.destroy) b.destroy(); }, [], scene);
+  playSfx('shoot');
+}
+
+function restartScene(scene) {
+  scene.scene.restart();
+}
+
+function updateHUD(scene) {
+  scene.hudEl.innerHTML = `Vidas: ${scene.player.lives} &nbsp;&nbsp; Pontos: ${scene.player.score} &nbsp;&nbsp; Tempo: ${scene.timer}`;
+}
+
+function levelComplete(scene) {
+  showCenterMessage(scene, 'Fase Completa!', 1600);
+}
+
+function gameOver(scene) {
+  scene.gamePaused = true;
+  showCenterMessage(scene, 'GAME OVER', 3000);
+}
+
+function showCenterMessage(scene, text, ms=1200) {
+  const el = scene.centerMsg;
+  el.style.display = 'block';
+  el.innerText = text;
+  setTimeout(()=> { el.style.display = 'none'; }, ms);
+}
+
+/* ---------- SFX minimal ---------- */
+let audioCtx;
+function ensureAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+function playSfx(type) {
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  function s({type='sine',f=440,d=0.12,g=0.05}) {
+    const o = audioCtx.createOscillator(); const gNode = audioCtx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, now);
+    gNode.gain.setValueAtTime(g, now);
+    gNode.gain.exponentialRampToValueAtTime(0.0001, now + d);
+    o.connect(gNode); gNode.connect(audioCtx.destination);
+    o.start(now); o.stop(now + d + 0.02);
+  }
+  if (type==='jump') s({type:'square',f:380,d:0.12,g:0.08});
+  if (type==='stomp') s({type:'sine',f:120,d:0.14,g:0.12});
+  if (type==='powerup') s({type:'triangle',f:880,d:0.14,g:0.08});
+  if (type==='shoot') s({type:'sawtooth',f:900,d:0.08,g:0.08});
+  if (type==='heart') s({type:'sine',f:520,d:0.16,g:0.09});
+}
+
+/* ---------- TOUCH / MOBILE ---------- */
+let touchState = { left:false, right:false, jump:false, shoot:false, lastJump:false, lastShoot:false };
+function setupTouchControls() {
+  const leftBtn = document.getElementById('leftBtn'); const rightBtn = document.getElementById('rightBtn');
+  const jumpBtn = document.getElementById('jumpBtn'); const shootBtn = document.getElementById('shootBtn');
+  const ctrlWrap = document.getElementById('touchControls');
+  function updateVisibility() { if (window.innerWidth < 900) ctrlWrap.style.display = 'flex'; else ctrlWrap.style.display = 'none'; }
+  updateVisibility(); window.addEventListener('resize', updateVisibility);
+  const bind = (el, prop)=> {
+    const start = (e)=> { e.preventDefault(); touchState[prop]=true; };
+    const end = (e)=> { e.preventDefault(); touchState[prop]=false; };
+    el.addEventListener('pointerdown', start); el.addEventListener('pointerup', end); el.addEventListener('pointerout', end); el.addEventListener('pointercancel', end);
+    el.addEventListener('touchstart', start, {passive:false}); el.addEventListener('touchend', end);
+  };
+  bind(leftBtn, 'left'); bind(rightBtn, 'right'); bind(jumpBtn, 'jump'); bind(shootBtn, 'shoot');
+}
+function isControlDown(name) { if (name === 'left') return touchState.left; if (name === 'right') return touchState.right; return false; }
+function justPressed(name) {
+  if (name === 'jump') { if (touchState.jump && !touchState.lastJump) { touchState.lastJump = true; setTimeout(()=> touchState.lastJump = false, 220); return true; } return false; }
+  if (name === 'shoot') { if (touchState.shoot && !touchState.lastShoot) { touchState.lastShoot = true; setTimeout(()=> touchState.lastShoot = false, 220); return true; } return false; }
+  return false;
+}
+
+window.addEventListener('orientationchange', ()=> location.reload());
+window.addEventListener('resize', ()=> { setTimeout(()=> { try { game.scale.resize(window.innerWidth > 960 ? 960 : window.innerWidth, window.innerWidth > 960 ? 540 : Math.round(window.innerHeight * 0.95)); } catch(e){} }, 150); });
+</script>
+</body>
+</html>
