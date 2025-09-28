@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>NTE GURUPI - Plataforma (5 Fases)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height:100%; margin:0; background:#87CEEB; font-family: Arial, sans-serif; -webkit-tap-highlight-color: transparent; }
+    #game { width:100%; height:100vh; display:block; touch-action: none; }
+    .hud { position: absolute; left: 10px; top: 10px; color: #fff; text-shadow: 0 1px 0 #0006; z-index: 20; }
+    .controls { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 30; display: flex; gap: 12px; align-items: center; justify-content: center; pointer-events: none;}
+    .btn { width: 64px; height: 64px; border-radius: 10px; background: rgba(0,0,0,0.35); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; user-select:none; pointer-events: auto; touch-action: none; }
+    .btn.small { width:48px; height:48px; font-size:14px; }
+    .ui-topright { position: absolute; right: 10px; top: 10px; z-index: 20; color:#fff; text-shadow: 0 1px 0 #0006; }
+    .center-message { position: absolute; z-index: 40; left: 50%; top: 40%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.6); color: #fff; padding: 20px; border-radius: 10px; text-align:center; display:none; }
+    button { padding:6px 8px; border-radius:6px; border: none; cursor:pointer; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hud" id="hud"></div>
+  <div class="ui-topright">
+    <div>Fase: <span id="levelLabel">1</span> / 5</div>
+    <div style="margin-top:6px">
+      <button id="btnRestart">Reiniciar</button>
+      <button id="btnResetProgress">Resetar Progresso</button>
+    </div>
+  </div>
+
+  <div class="controls" id="touchControls">
+    <div class="btn" id="leftBtn">◀</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="btn small" id="jumpBtn">▲</div>
+      <div class="btn small" id="shootBtn">●</div>
+    </div>
+    <div class="btn" id="rightBtn">▶</div>
+  </div>
+
+  <div class="center-message" id="centerMsg"></div>
+
+<script>
+const MAX_LEVEL = 5;
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: window.innerWidth > 960 ? 960 : window.innerWidth,
+  height: window.innerWidth > 960 ? 540 : Math.round(window.innerHeight * 0.95),
+  backgroundColor: 0x87CEEB,
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  physics: { default: 'arcade', arcade: { gravity: { y: 1000 }, debug: false }},
+  scene: { preload, create, update }
+};
+let game = new Phaser.Game(config);
+
+/* ---------- SONS (WebAudio sintetizado) ---------- */
+let audioCtx;
+function ensureAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+function playSound(type) {
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  function oscEnvelope({type='sine', freq=440, dur=0.12, gain=0.12, attack=0.001, decay=0.05}) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, now);
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(Math.max(gain,0.0001), now + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur - decay);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(now); o.stop(now + dur + 0.02);
+  }
+  switch(type) {
+    case 'jump': oscEnvelope({type:'square', freq:380, dur:0.15, gain:0.08}); break;
+    case 'shoot': oscEnvelope({type:'sawtooth', freq:900, dur:0.08, gain:0.09}); break;
+    case 'powerup': oscEnvelope({type:'sine', freq:660, dur:0.14, gain:0.09}); setTimeout(()=> oscEnvelope({type:'sine', freq:880, dur:0.12, gain:0.07}), 60); break;
+    case 'coin': oscEnvelope({type:'square', freq:880, dur:0.10, gain:0.09}); break;
+    case 'heart': oscEnvelope({type:'sine', freq:520, dur:0.18, gain:0.11}); setTimeout(()=> oscEnvelope({type:'sine', freq:720, dur:0.12, gain:0.06}), 70); break;
+    case 'stomp': oscEnvelope({type:'sine', freq:120, dur:0.18, gain:0.18}); break;
+    case 'hit': oscEnvelope({type:'sawtooth', freq:210, dur:0.22, gain:0.14}); break;
+    case 'level': oscEnvelope({type:'triangle', freq:780, dur:0.10, gain:0.08}); setTimeout(()=> oscEnvelope({type:'triangle', freq:980, dur:0.14, gain:0.09}), 100); break;
+    case 'gameover': oscEnvelope({type:'sine', freq:140, dur:0.6, gain:0.12}); break;
+    default: break;
+  }
+}
+
+/* ---------- PRELOAD ---------- */
+function preload() {
+  // assets located in /assets/
+  this.load.image('player_img', 'assets/player.png');
+  this.load.spritesheet('enemies_sheet', 'assets/enemies.png', { frameWidth: 32, frameHeight: 32 });
+}
+
+/* ---------- CREATE / UPDATE / LÓGICA ---------- */
+function create() {
+  const scene = this;
+  scene.level = loadProgress() || 1;
+  scene.score = 0;
+  scene.keys = scene.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', shoot: 'SHIFT' });
+  setupTouchControls();
+
+  scene.platforms = scene.physics.add.staticGroup();
+  scene.blocks = scene.physics.add.staticGroup();
+  scene.items = scene.physics.add.group();
+  scene.enemies = scene.physics.add.group();
+  scene.bullets = scene.physics.add.group();
+
+  scene.hud = document.getElementById('hud');
+  scene.levelLabel = document.getElementById('levelLabel');
+  document.getElementById('btnRestart').onclick = ()=> loadLevel(scene, scene.level, true);
+  document.getElementById('btnResetProgress').onclick = ()=> { localStorage.removeItem('nte_level'); scene.level = 1; loadLevel(scene, scene.level, true); };
+  scene.centerMsg = document.getElementById('centerMsg');
+
+  createPlayerTextureFromImage(scene);
+  loadLevel(scene, scene.level, true);
+}
+function update(time) {
+  const scene = this;
+  if (!scene.player || scene.gamePaused) return;
+  const keys = scene.keys; const pl = scene.player;
+  if (isControlDown('left') || keys.left.isDown) { pl.setVelocityX(-180); pl.flipX = true; }
+  else if (isControlDown('right') || keys.right.isDown) { pl.setVelocityX(160); pl.flipX = false; }
+  else pl.setVelocityX(0);
+
+  if ((justPressed('jump') || Phaser.Input.Keyboard.JustDown(keys.up)) && pl.body.onFloor()) { pl.setVelocityY(-420); playSound('jump'); }
+
+  if ((justPressed('shoot') || Phaser.Input.Keyboard.JustDown(keys.shoot)) && pl.isPowered) {
+    if (time - scene.lastShot > 350) { shoot(scene); playSound('shoot'); scene.lastShot = time; }
+  }
+
+  scene.enemies.getChildren().forEach(enemy => {
+    if (!enemy.isDead) {
+      if (enemy.body.blocked.left) { enemy.setVelocityX(80); enemy.dir = 1; }
+      else if (enemy.body.blocked.right) { enemy.setVelocityX(-80); enemy.dir = -1; }
+      if (Math.abs(enemy.body.velocity.x) < 10) enemy.setVelocityX(80 * (enemy.dir || 1));
+      if (Math.abs(enemy.x - pl.x) < 80) enemy.setVelocityX(140 * (enemy.dir || 1));
+    }
+  });
+
+  if (scene.goal && Phaser.Geom.Intersects.RectangleToRectangle(scene.player.getBounds(), scene.goal.getBounds())) {
+    levelComplete(scene);
+  }
+}
+
+/* ---------- NÍVEIS (config) ---------- */
+
+
+const LEVELS = [
+  { width: 1600, blocks: [ {x:240,y:380}, {x:300,y:380}, {x:520,y:300}, {x:580,y:300}, {x:900,y:360} ], enemies: [ {x:420,y:480,dir:1}, {x:700,y:480,dir:-1} ], name: 'Praça NTE' },
+  { width: 1800, blocks: [ {x:260,y:350}, {x:320,y:350}, {x:450,y:300}, {x:510,y:300}, {x:740,y:360}, {x:1100,y:320} ], enemies: [ {x:520,y:480,dir:-1}, {x:760,y:260,dir:1}, {x:1200,y:480,dir:-1} ], name: 'Rua das Placas' },
+  { width: 2000, blocks: [ {x:340,y:300}, {x:420,y:300}, {x:700,y:260}, {x:760,y:260}, {x:1400,y:320}, {x:1500,y:320} ], enemies: [ {x:880,y:480,dir:1}, {x:1560,y:480,dir:-1}, {x:980,y:320,dir:-1} ], name: 'Avenida Solar' },
+  { width: 2200, blocks: [ {x:300,y:380}, {x:360,y:380}, {x:560,y:320}, {x:620,y:320}, {x:920,y:300}, {x:1350,y:360},{x:1720,y:300} ], enemies: [ {x:420,y:480,dir:1}, {x:520,y:480,dir:-1}, {x:740,y:480,dir:1}, {x:1220,y:480,dir:-1}, {x:1700,y:480,dir:1} ], name: 'Setor Educacional' },
+  { width: 2400, blocks: [ {x:280,y:340}, {x:340,y:340}, {x:520,y:300}, {x:580,y:300}, {x:840,y:260},{x:1380,y:320},{x:1680,y:320},{x:2020,y:340} ], enemies: [ {x:420,y:480,dir:1}, {x:700,y:480,dir:-1}, {x:980,y:320,dir:1}, {x:1400,y:480,dir:-1}, {x:1800,y:480,dir:1}, {x:2080,y:480,dir:-1} ], name: 'Diretoria Final' }
+];
+
+function loadLevel(scene, levelNumber, resetPlayer=false) {
+  scene.gamePaused = false; scene.lastShot = 0;
+  scene.enemies.clear(true,true); scene.blocks.clear(true,true); scene.items.clear(true,true); scene.bullets.clear(true,true);
+  if (scene.platformObjs) scene.platformObjs.forEach(o => { if (o.destroy) o.destroy(); });
+  scene.platformObjs = [];
+
+  const L = LEVELS[levelNumber-1]; const worldWidth = L.width;
+  scene.physics.world.setBounds(0,0,worldWidth,scene.scale.height);
+  scene.cameras.main.setBounds(0,0,worldWidth,scene.scale.height);
+
+  for (let i=0;i<Math.ceil(worldWidth/120);i++){
+    const gx = i*120 + 60;
+    const ground = scene.add.rectangle(gx, scene.scale.height - 20, 120, 40, 0x654321);
+    scene.physics.add.existing(ground, true);
+    scene.platforms.add(ground); scene.platformObjs.push(ground);
+  }
+
+  L.blocks.forEach((p, i) => {
+    const g = scene.add.graphics(); g.fillStyle(0xDEB887, 1); g.fillRect(0,0,50,40); g.lineStyle(2, 0x8B5A2B); g.strokeRect(0,0,50,40);
+    const key = 'block' + levelNumber + '_' + i; g.generateTexture(key, 50, 40); g.destroy();
+    const b = scene.physics.add.staticImage(p.x, p.y, key); b.setData('used', false); scene.blocks.add(b);
+  });
+
+  L.enemies.forEach(e => spawnEnemy(scene, e.x, e.y, e.dir));
+  if (scene.goal && scene.goal.destroy) scene.goal.destroy();
+  scene.goal = scene.add.rectangle(L.width - 80, scene.scale.height - 80, 140, 140, 0x9ACD32);
+  scene.physics.add.existing(scene.goal, true);
+  if (!scene.player || resetPlayer) {
+    if (scene.player && scene.player.destroy) scene.player.destroy();
+    scene.player = scene.physics.add.sprite(80, scene.scale.height - 140, 'player_idle');
+    scene.player.setCollideWorldBounds(true); scene.player.setBounce(0.05); scene.player.setSize(22,40); scene.player.setOffset(5,8);
+    scene.player.isPowered = false; scene.player.lives = scene.player && !resetPlayer ? scene.player.lives : 3; scene.player.score = scene.score || 0;
+  } else { scene.player.x = 80; scene.player.y = scene.scale.height - 140; scene.player.setVelocity(0,0); }
+
+  scene.physics.add.collider(scene.player, scene.platforms);
+  scene.physics.add.collider(scene.enemies, scene.platforms);
+  scene.physics.add.collider(scene.items, scene.platforms);
+  scene.physics.add.collider(scene.bullets, scene.platforms, (b)=> { if (b && b.destroy) b.destroy(); });
+
+  scene.physics.add.collider(scene.player, scene.blocks, (pl, bl) => {
+    const touchingTop = pl.body.touching.up && bl.body.touching.down;
+    if (touchingTop && !bl.getData('used')) {
+      bl.setData('used', true); bl.setTint(0xffff66); scene.time.delayedCall(200, ()=> bl.clearTint());
+      if (Math.random() < 0.25) spawnHeart(scene, bl.x, bl.y - 30); else spawnNTEItem(scene, bl.x, bl.y - 30);
+    }
+  });
+
+  scene.physics.add.overlap(scene.player, scene.items, (pl, item) => {
+    if (!item.collected) {
+      item.collected = true; item.disableBody(true,true);
+      if (item.getData && item.getData('isHeart')) { pl.lives = (pl.lives || 0) + 1; playSound('heart'); }
+      else if (item.getData && item.getData('isNTE')) { pl.isPowered = true; if (pl.powerTimer) pl.powerTimer.remove(false); pl.powerTimer = scene.time.addEvent({ delay: 15000, callback: ()=> { pl.isPowered = false; }, callbackScope: scene }); playSound('powerup'); }
+      else playSound('coin');
+      pl.score += 100; scene.score = pl.score; updateHUD(scene);
+    }
+  });
+
+  scene.physics.add.overlap(scene.bullets, scene.enemies, (b, e) => {
+    if (b && b.destroy) b.destroy();
+    stompEnemy(scene, e); playSound('stomp'); scene.player.score += 50; scene.score = scene.player.score; updateHUD(scene);
+  });
+
+  scene.physics.add.collider(scene.player, scene.enemies, (pl, en) => {
+    if (pl.body.velocity.y > 100 && pl.body.touching.down && en.body.touching.up) {
+      stompEnemy(scene, en); playSound('stomp'); pl.setVelocityY(-350); pl.score += 50; scene.score = pl.score; updateHUD(scene); return;
+    }
+    if (!en.isDead && !pl.invincible) takeDamage(scene, pl);
+  });
+
+  scene.cameras.main.startFollow(scene.player, true, 0.08, 0.08); scene.cameras.main.setBounds(0,0,L.width,scene.scale.height);
+  scene.levelLabel.innerText = levelNumber; updateHUD(scene); showCenterMessage(scene, `Fase ${levelNumber}: ${L.name}`, 1400);
+  scene.enemies.getChildren().forEach(e => { e.setCollideWorldBounds(true); });
+  saveProgress(levelNumber);
+}
+
+/* ---------- CRIA PLAYER a partir da imagem ---------- */
+function createPlayerTextureFromImage(scene) {
+  if (scene.textures.exists('player_idle')) return;
+  try {
+    const img = scene.textures.get('player_img').getSourceImage();
+    const w = 32, h = 48;
+    const canvasKey = 'player_canvas';
+    const can = scene.textures.createCanvas(canvasKey, w, h);
+    const ctx = can.context;
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, w, h);
+    // add NTE GPI label
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.font = '6px Arial'; ctx.fillText('NTE GPI', 0, h-6);
+    can.refresh();
+    scene.textures.addSpriteSheetFromAtlas('player_idle', { atlas: canvasKey, frame: null, frameWidth: w, frameHeight: h });
+  } catch(e){ const g = scene.add.graphics(); g.fillStyle(0x1E90FF,1); g.fillRect(0,0,32,48); g.generateTexture('player_idle',32,48); g.destroy(); }
+}
+
+/* ---------- ITENS ---------- */
+function spawnNTEItem(scene, x, y) {
+  const txt = scene.add.text(x, y, 'NTE', { font: '18px Arial', color: '#FFD700', stroke:'#000', strokeThickness:2 }).setOrigin(0.5);
+  scene.physics.add.existing(txt); txt.body.setVelocityY(-120); txt.body.setBounce(0.2); txt.body.setCollideWorldBounds(true); txt.body.setAllowGravity(true); txt.body.setSize(10,10);
+  txt.setData('isNTE', true); scene.items.add(txt);
+}
+function spawnHeart(scene, x, y) {
+  const txt = scene.add.text(x, y, '❤', { font: '18px Arial', color: '#FF4D4D', stroke:'#000', strokeThickness:2 }).setOrigin(0.5);
+  txt.setData('isHeart', true); scene.items.add(txt);
+  scene.physics.add.existing(txt); txt.body.setVelocityY(-140); txt.body.setBounce(0.2); txt.body.setCollideWorldBounds(true); txt.body.setAllowGravity(true); txt.body.setSize(12,12);
+}
+
+/* ---------- INIMIGOS (spritesheet) ---------- */
+function spawnEnemy(scene, x, y, dir=1) {
+  let maxFrame = 0;
+  try { maxFrame = scene.textures.get('enemies_sheet').frameTotal - 1; } catch(e) { maxFrame = 0; }
+  const frameIndex = Phaser.Math.Between(0, Math.max(0, maxFrame));
+  const e = scene.physics.add.sprite(x, y, 'enemies_sheet', frameIndex);
+  e.setCollideWorldBounds(true); e.setBounce(0); e.setVelocityX(80 * dir); e.dir = dir; e.isDead = false; e.setScale(1.4);
+  scene.enemies.add(e);
+}
+
+/* ---------- TIROS ---------- */
+function shoot(scene) {
+  const pl = scene.player; const bx = pl.x + (pl.flipX ? -18 : 18);
+  const key = 'bullet' + Phaser.Math.RND.uuid();
+  const g = scene.add.graphics(); g.fillStyle(0x00FF00,1); g.fillCircle(6,6,6); g.generateTexture(key,12,12); g.destroy();
+  const b = scene.physics.add.image(bx, pl.y - 8, key); b.setCircle(6); b.body.setAllowGravity(false); b.setVelocityX(pl.flipX ? -350 : 350);
+  scene.bullets.add(b); scene.time.delayedCall(2500, ()=> { if (b && b.destroy) b.destroy(); }, [], scene);
+}
+
+/* ---------- COLISÕES e LÓGICA ---------- */
+function stompEnemy(scene, enemy) { if (!enemy || enemy.isDead) return; enemy.isDead = true; enemy.setVelocity(0); enemy.setTint(0x666666); scene.tweens.add({ targets: enemy, y: enemy.y - 30, alpha: 0, duration: 400, ease: 'Cubic.easeOut', onComplete: ()=> { if (enemy.destroy) enemy.destroy(); }}); }
+function takeDamage(scene, player) {
+  player.lives -= 1; updateHUD(scene); player.invincible = true; player.setTint(0xff0000); player.score = Math.max(0, player.score - 50); playSound('hit');
+  scene.time.delayedCall(1000, ()=> { player.clearTint(); player.invincible = false; }, [], scene);
+  if (player.lives <= 0) gameOver(scene); else { player.x = Math.max(50, player.x - 120); player.y = 200; player.setVelocity(0,0); }
+}
+function updateHUD(scene) { const pl = scene.player; scene.hud.innerHTML = `Vidas: ${pl.lives} &nbsp;&nbsp; Pontos: ${pl.score} &nbsp;&nbsp; Poder NTE: ${pl.isPowered ? 'ON' : 'OFF'}`; }
+function levelComplete(scene) {
+  if (scene.gamePaused) return;
+  scene.gamePaused = true; playSound('level'); showCenterMessage(scene, `Fase ${scene.level} completa!`, 1600);
+  scene.time.delayedCall(1600, ()=> { if (scene.level < MAX_LEVEL) { scene.level++; saveProgress(scene.level); loadLevel(scene, scene.level, true); } else { playSound('level'); showCenterMessage(scene, `Parabéns! Você completou todas as fases!`, 4000); } }, [], scene);
+}
+function gameOver(scene) { if (scene.gamePaused) return; scene.gamePaused = true; playSound('gameover'); showCenterMessage(scene, `GAME OVER\nRecarregue a página ou pressione Reiniciar`, 4000); }
+function showCenterMessage(scene, text, ms=1200) { const el = scene.centerMsg; el.style.display = 'block'; el.innerText = text; setTimeout(()=> { el.style.display = 'none'; }, ms); }
+
+/* ---------- TOUCH ---------- */
+let touchState = { left:false, right:false, jump:false, shoot:false, lastJump:false, lastShoot:false };
+function setupTouchControls() {
+  const leftBtn = document.getElementById('leftBtn'); const rightBtn = document.getElementById('rightBtn'); const jumpBtn = document.getElementById('jumpBtn'); const shootBtn = document.getElementById('shootBtn');
+  const ctrlWrap = document.getElementById('touchControls');
+  function updateVisibility() { if (window.innerWidth < 900) ctrlWrap.style.display = 'flex'; else ctrlWrap.style.display = 'none'; }
+  updateVisibility(); window.addEventListener('resize', updateVisibility);
+  const bind = (el, prop)=> {
+    const start = (e)=> { e.preventDefault(); touchState[prop]=true; };
+    const end = (e)=> { e.preventDefault(); touchState[prop]=false; };
+    el.addEventListener('pointerdown', start); el.addEventListener('pointerup', end); el.addEventListener('pointerout', end); el.addEventListener('pointercancel', end);
+    el.addEventListener('touchstart', start, {passive:false}); el.addEventListener('touchend', end);
+  };
+  bind(leftBtn, 'left'); bind(rightBtn, 'right'); bind(jumpBtn, 'jump'); bind(shootBtn, 'shoot');
+}
+function isControlDown(name) { if (name === 'left') return touchState.left; if (name === 'right') return touchState.right; return false; }
+function justPressed(name) {
+  if (name === 'jump') {
+    if (touchState.jump && !touchState.lastJump) { touchState.lastJump = true; setTimeout(()=> touchState.lastJump = false, 200); return true; }
+    return false;
+  }
+  if (name === 'shoot') {
+    if (touchState.shoot && !touchState.lastShoot) { touchState.lastShoot = true; setTimeout(()=> touchState.lastShoot = false, 200); return true; }
+    return false;
+  }
+  return false;
+}
+
+/* ---------- PROGRESS ---------- */
+function saveProgress(level) { localStorage.setItem('nte_level', String(level)); }
+function loadProgress() { try { const v = parseInt(localStorage.getItem('nte_level')); if (!v || v < 1) return 1; return Math.min(MAX_LEVEL, v); } catch(e){ return 1; } }
+
+/* ---------- UTIL ---------- */
+window.addEventListener('orientationchange', ()=> location.reload());
+window.addEventListener('resize', ()=> { setTimeout(()=> { try { game.scale.resize(window.innerWidth > 960 ? 960 : window.innerWidth, window.innerWidth > 960 ? 540 : Math.round(window.innerHeight * 0.95)); } catch(e){} }, 150); });
+</script>
+</body>
+</html>
