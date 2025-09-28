@@ -1,0 +1,23 @@
+
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>NTE GPI — Mario-like demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body { margin:0; padding:0; height:100%; background:#111; }
+    #gameDiv { width:100%; height:100vh; display:flex; align-items:center; justify-content:center; }
+    .credits { position: absolute; top: 8px; left: 8px; color: white; font-family: Arial, sans-serif; z-index: 10; }
+    .topbar { position: absolute; top:0; left:0; width:100%; height:42px; background: rgba(0,0,0,0.6); color:#fff; display:flex; align-items:center; padding-left:12px; font-family: Arial, sans-serif; z-index: 10; }
+  </style>
+</head>
+<body>
+  <div class="topbar">NTE GPI — Jogo estilo Super Mario (clonê)</div>
+  <div id="gameDiv"></div>
+
+  <!-- Phaser 3 from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
